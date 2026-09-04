@@ -1,0 +1,19 @@
+# Secrets — never commit real credentials
+.env
+
+# SQLite database — auto-generated at runtime
+recovery_agent.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
