@@ -173,26 +173,49 @@ def health_razorpay() -> JSONResponse:
             },
         )
 
-    # Attempt a lightweight read-only API call
+    # Attempt a lightweight read-only API call using requests directly.
+    # We avoid instantiating the Razorpay SDK here because it internally
+    # imports pkg_resources (setuptools) which can be unavailable in
+    # certain Python 3.12 venvs. Using requests + HTTP Basic Auth is
+    # functionally identical and has no extra dependencies.
     try:
-        import razorpay  # imported lazily so missing SDK doesn't break startup
+        import requests as _requests
 
-        client = razorpay.Client(auth=(key_id, key_secret))
-        # Fetch at most 1 payment — minimal network round-trip
-        client.payment.all({"count": 1})
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "ok",
-                "message": "Razorpay test-mode API connection successful",
-            },
+        response = _requests.get(
+            "https://api.razorpay.com/v1/payments",
+            params={"count": 1},
+            auth=(key_id, key_secret),
+            timeout=10,
         )
+
+        if response.status_code == 200:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "ok",
+                    "message": "Razorpay test-mode API connection successful",
+                },
+            )
+        elif response.status_code == 401:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "error",
+                    "message": "Razorpay authentication failed — check your Key ID and Secret",
+                },
+            )
+        else:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "error",
+                    "message": f"Razorpay API returned HTTP {response.status_code}",
+                },
+            )
 
     except Exception as exc:
         # Surface a safe, readable error without leaking credentials
         safe_message = str(exc)
-        # Strip any potential credential echoes from error strings
         if key_id in safe_message:
             safe_message = safe_message.replace(key_id, "***KEY_ID***")
         if key_secret in safe_message:
