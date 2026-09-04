@@ -2,9 +2,6 @@
 
 An AI-powered failed payment recovery agent that detects payment failures, analyzes their causes, and helps recover lost revenue intelligently.
 
-**Hackathon:** Razorpay Buildathon  
-**Track:** Track 03 — AI Revenue Recovery
-
 ---
 
 ## Features & Components
