@@ -32,7 +32,6 @@ recovery-agent/
 │   │   ├── models.py         # LossEvent, PipelineRun, AuditLog
 │   │   └── seed_data.py      # Synthetic data generator (50 records)
 │   │
-│   ├── .env.example          # Credential template (safe to commit)
 │   ├── .gitignore
 │   └── requirements.txt
 │
