@@ -49,9 +49,9 @@ async def lifespan(app: FastAPI):
 # Application instance
 # ---------------------------------------------------------------------------
 app = FastAPI(
-    title="Failed Payment Recovery Agent — Phase 1",
+    title="Failed Payment Recovery Agent",
     description=(
-        "Phase 1 foundation: SQLite database, ORM models, "
+        "Backend service with SQLite database, ORM models, "
         "synthetic data seeding, and API health/verification endpoints."
     ),
     version="1.0.0",
