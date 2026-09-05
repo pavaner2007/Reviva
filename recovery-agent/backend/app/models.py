@@ -9,7 +9,8 @@ Three tables:
 Phase 2 columns populated by the detection + root-cause pipeline:
   PipelineRun.root_cause, PipelineRun.root_cause_method
 
-Phase 3+ columns (strategy, guardrail_passed, action_taken, …) remain NULL.
+Phase 3 columns populated by the strategy + guardrail pipeline:
+  PipelineRun.strategy, PipelineRun.guardrail_passed, PipelineRun.guardrail_reason
 """
 from datetime import datetime, timezone
 
@@ -164,7 +165,13 @@ class PipelineRun(Base):
     guardrail_passed: Mapped[bool | None] = mapped_column(
         Boolean,
         nullable=True,
-        comment='Phase 2: whether the guardrail check passed',
+        comment='Phase 3: True if all guardrails cleared, False if blocked',
+    )
+
+    guardrail_reason: Mapped[str | None] = mapped_column(
+        String(512),
+        nullable=True,
+        comment='Phase 3: comma-separated list of failed guardrail reason codes (NULL when passed)',
     )
 
     action_taken: Mapped[str | None] = mapped_column(

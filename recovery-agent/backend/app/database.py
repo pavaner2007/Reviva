@@ -79,6 +79,8 @@ def migrate_db() -> None:
     migrations = [
         # Phase 2: root_cause_method column added to pipeline_runs
         "ALTER TABLE pipeline_runs ADD COLUMN root_cause_method TEXT",
+        # Phase 3: guardrail_reason stores comma-separated failed guardrail reasons
+        "ALTER TABLE pipeline_runs ADD COLUMN guardrail_reason TEXT",
     ]
     with engine.connect() as conn:
         for sql in migrations:

@@ -1,14 +1,17 @@
 """
-pipeline/runner.py — Phase 2 pipeline orchestrator.
+pipeline/runner.py — Pipeline orchestrator (Phase 2 and Phase 3).
 
-Fetches all LossEvent records and runs the Phase 2 pipeline on each:
+Phase 2 pipeline:
     detect_loss()  →  analyze_root_cause()
 
-Returns a summary dict with per-method counts.
+Phase 3 pipeline:
+    select_strategy()  →  check_guardrails()
+
+Both pipelines are idempotent by default (force=False skips already-processed records).
 
 CLI usage (run from the backend/ directory):
-    python -m app.pipeline.runner            # normal run
-    python -m app.pipeline.runner --force    # forced reprocessing
+    python -m app.pipeline.runner            # Phase 2 normal run
+    python -m app.pipeline.runner --force    # Phase 2 forced reprocessing
 """
 from __future__ import annotations
 
@@ -28,9 +31,11 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(dotenv_path=_BACKEND_DIR / ".env", override=False)
 
 from app.database import create_session, init_db  # noqa: E402
-from app.models import LossEvent  # noqa: E402
+from app.models import LossEvent, PipelineRun  # noqa: E402
 from app.pipeline.detect import detect_loss  # noqa: E402
 from app.pipeline.root_cause import analyze_root_cause  # noqa: E402
+from app.pipeline.strategy import select_strategy  # noqa: E402
+from app.pipeline.guardrails import check_guardrails  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +103,106 @@ def run_pipeline_phase2(db, force: bool = False) -> dict:
             summary["failed_count"] += 1
             print(
                 f"[ERROR] Pipeline failed for event_id={event.id}: {exc}",
+                file=sys.stderr,
+            )
+
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 summary type
+# ---------------------------------------------------------------------------
+def _empty_phase3_summary() -> dict:
+    return {
+        "total_processed": 0,
+        "guardrail_passed_count": 0,
+        "guardrail_blocked_count": 0,
+        "blocked_reasons_breakdown": {
+            "max_attempts_exceeded": 0,
+            "cooldown_active": 0,
+            "escalated_not_auto_actionable": 0,
+            "amount_exceeds_auto_recovery_ceiling": 0,
+        },
+        "skipped_count": 0,
+        "failed_count": 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 Orchestrator
+# ---------------------------------------------------------------------------
+def run_pipeline_phase3(db, force: bool = False) -> dict:
+    """
+    Run the Phase 3 strategy selection + guardrail pipeline.
+
+    Processes all PipelineRun records that have a non-null root_cause.
+    Skips records where strategy is already set (unless force=True).
+
+    Args:
+        db:    An active SQLAlchemy session (caller owns lifecycle).
+        force: If True, reprocess already-processed records.
+
+    Returns:
+        Summary dict with guardrail pass/block counts and reason breakdown.
+    """
+    from app.models import LossEvent  # local to avoid circular import concerns
+
+    runs: list[PipelineRun] = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.root_cause.isnot(None))
+        .order_by(PipelineRun.event_id.asc())
+        .all()
+    )
+
+    summary = _empty_phase3_summary()
+
+    for run in runs:
+        try:
+            # Skip if no root_cause (defensive guard)
+            if not run.root_cause:
+                print(
+                    f"[WARN] PipelineRun id={run.id} has no root_cause — skipping.",
+                    file=sys.stderr,
+                )
+                continue
+
+            # Skip if already processed and not forced
+            if run.strategy is not None and not force:
+                summary["skipped_count"] += 1
+                continue
+
+            # Load the parent LossEvent
+            event: LossEvent | None = run.event
+            if event is None:
+                print(
+                    f"[WARN] PipelineRun id={run.id} has no associated LossEvent — skipping.",
+                    file=sys.stderr,
+                )
+                summary["failed_count"] += 1
+                continue
+
+            # ── Step 1: Strategy selection ───────────────────────────────────
+            select_strategy(run, db, force=force)
+
+            # ── Step 2: Guardrail checks ─────────────────────────────────────
+            guardrail_result = check_guardrails(event, run, db)
+
+            # ── Aggregate summary ────────────────────────────────────────────
+            summary["total_processed"] += 1
+
+            if guardrail_result["passed"]:
+                summary["guardrail_passed_count"] += 1
+            else:
+                summary["guardrail_blocked_count"] += 1
+                breakdown = summary["blocked_reasons_breakdown"]
+                for reason in guardrail_result["failed_reasons"]:
+                    if reason in breakdown:
+                        breakdown[reason] += 1
+
+        except Exception as exc:
+            summary["failed_count"] += 1
+            print(
+                f"[ERROR] Phase 3 pipeline failed for PipelineRun id={run.id}: {exc}",
                 file=sys.stderr,
             )
 

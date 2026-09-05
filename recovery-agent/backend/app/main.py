@@ -11,6 +11,12 @@ Phase 2 endpoints:
     POST /pipeline/run-phase2 → run detection + root-cause pipeline
     GET  /pipeline/results    → PipelineRun results joined with LossEvent
     GET  /audit-log/{event_id}→ full audit trail for one event
+
+Phase 3 endpoints:
+    POST /pipeline/run-phase3     → run strategy + guardrail pipeline
+    GET  /pipeline/blocked        → all runs where guardrail_passed == False
+    GET  /pipeline/cleared        → all runs where guardrail_passed == True
+    POST /seed/guardrail-test-cases → additive idempotent test case seeder
 """
 from __future__ import annotations
 
@@ -52,12 +58,13 @@ async def lifespan(app: FastAPI):
 # Application instance
 # ---------------------------------------------------------------------------
 app = FastAPI(
-    title="Failed Payment Recovery Agent",
+    title="Reviva — Failed Payment Recovery Agent",
     description=(
         "Backend service with SQLite database, ORM models, synthetic data seeding, "
-        "Razorpay integration, and AI-powered root-cause classification."
+        "Razorpay integration, AI-powered root-cause classification, "
+        "deterministic strategy selection, and guardrail enforcement."
     ),
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -342,3 +349,138 @@ def get_audit_log(
             for log in logs
         ]
     )
+
+
+# ===========================================================================
+# PHASE 3 ENDPOINTS
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 8 — POST /pipeline/run-phase3
+# ---------------------------------------------------------------------------
+@app.post("/pipeline/run-phase3", summary="Run Phase 3 strategy selection + guardrail pipeline")
+def run_phase3(
+    force: bool = False,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    Runs the Phase 3 pipeline over all PipelineRun records that have a root_cause.
+
+    - Selects a deterministic recovery strategy based on root_cause.
+    - Evaluates all four guardrail rules.
+    - Updates PipelineRun with strategy, guardrail_passed, guardrail_reason.
+    - Idempotent by default (force=False skips already-processed records).
+    - Use ?force=true to reprocess and update existing results.
+    """
+    from app.pipeline.runner import run_pipeline_phase3
+
+    summary = run_pipeline_phase3(db, force=force)
+    return JSONResponse(content=summary)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 9 — GET /pipeline/blocked
+# ---------------------------------------------------------------------------
+@app.get("/pipeline/blocked", summary="List all guardrail-blocked PipelineRun records")
+def pipeline_blocked(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Returns all PipelineRun records where guardrail_passed == False,
+    ordered by event_id ascending.
+
+    These are events that were detected, root-cause classified, and strategy
+    selected, but blocked from automatic recovery execution.
+    """
+    def _fmt_dt(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    runs: list[PipelineRun] = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.guardrail_passed.is_(False))
+        .order_by(PipelineRun.event_id.asc())
+        .all()
+    )
+
+    results = []
+    for run in runs:
+        event: LossEvent | None = run.event
+        results.append(
+            {
+                "event_id":         run.event_id,
+                "pipeline_run_id":  run.id,
+                "order_id":         event.order_id if event else None,
+                "customer_id":      event.customer_id if event else None,
+                "customer_name":    event.customer_name if event else None,
+                "amount":           event.amount if event else None,
+                "failure_code":     event.failure_code if event else None,
+                "root_cause":       run.root_cause,
+                "strategy":         run.strategy,
+                "guardrail_passed": run.guardrail_passed,
+                "guardrail_reason": run.guardrail_reason,
+                "timestamp":        _fmt_dt(run.timestamp),
+            }
+        )
+
+    return JSONResponse(content=results)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 10 — GET /pipeline/cleared
+# ---------------------------------------------------------------------------
+@app.get("/pipeline/cleared", summary="List all guardrail-cleared PipelineRun records")
+def pipeline_cleared(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Returns all PipelineRun records where guardrail_passed == True,
+    ordered by event_id ascending.
+
+    These are the only records eligible for Phase 4 (payment recovery execution).
+    """
+    def _fmt_dt(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    runs: list[PipelineRun] = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.guardrail_passed.is_(True))
+        .order_by(PipelineRun.event_id.asc())
+        .all()
+    )
+
+    results = []
+    for run in runs:
+        event: LossEvent | None = run.event
+        results.append(
+            {
+                "event_id":         run.event_id,
+                "pipeline_run_id":  run.id,
+                "order_id":         event.order_id if event else None,
+                "customer_id":      event.customer_id if event else None,
+                "customer_name":    event.customer_name if event else None,
+                "amount":           event.amount if event else None,
+                "failure_code":     event.failure_code if event else None,
+                "root_cause":       run.root_cause,
+                "strategy":         run.strategy,
+                "guardrail_passed": run.guardrail_passed,
+                "timestamp":        _fmt_dt(run.timestamp),
+            }
+        )
+
+    return JSONResponse(content=results)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 11 — POST /seed/guardrail-test-cases
+# ---------------------------------------------------------------------------
+@app.post("/seed/guardrail-test-cases", summary="Seed additive guardrail test cases")
+def seed_guardrail_test_cases(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Creates dedicated test case LossEvents and PipelineRuns for each guardrail type.
+
+    Additive and idempotent — safe to call multiple times.
+    Only creates records that do not already exist (checked by order_id).
+    TC2 (cooldown) always refreshes the prior-cleared timestamp to 30 min ago.
+
+    Returns a summary of what was created vs. skipped.
+    """
+    from app.pipeline.seed_guardrail_test_cases import seed_all
+
+    result = seed_all(db)
+    return JSONResponse(content=result)
