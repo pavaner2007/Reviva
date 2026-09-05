@@ -1,6 +1,6 @@
 # Reviva
 
-An AI-powered failed payment recovery agent that detects payment failures, analyzes their root causes, and helps recover lost revenue intelligently.
+An AI-powered failed payment recovery agent that detects payment failures, analyzes root causes with hybrid rule/LLM classification, determines targeted recovery strategies, and enforces safety guardrails before recovery execution.
 
 ---
 
@@ -8,12 +8,14 @@ An AI-powered failed payment recovery agent that detects payment failures, analy
 
 | Component | Description |
 |---|---|
-| **FastAPI Backend** | Clean modular architecture under `backend/app/` |
-| **SQLite Database** | Auto-migrated schema with `LossEvent`, `PipelineRun`, and `AuditLog` models |
-| **Synthetic Data Engine** | 50 realistic failed-payment records spanning common and ambiguous failure codes |
-| **Detection Engine** | Detects loss events, validates fields, and logs audit events |
-| **Root Cause Analysis** | Hybrid analyzer combining fast rule-based matching with Groq LLM fallback for edge cases |
-| **Pipeline Runner & CLI** | Idempotent execution orchestrator with CLI and REST API interfaces |
+| **FastAPI Backend** | Modular REST API service under `backend/app/` with automatic database migration |
+| **SQLite Database** | Auto-migrated schema with `LossEvent`, `PipelineRun`, and `AuditLog` ORM models |
+| **Synthetic Data Engine** | Realistic failed-payment records spanning common and ambiguous failure codes |
+| **Detection Engine** | Detects loss events, validates payload integrity, and logs audit events |
+| **Root Cause Analysis** | Hybrid analyzer combining deterministic rule matching with Groq LLM fallback for edge cases |
+| **Strategy Selection** | Deterministic recovery strategy selection mapped directly to classified root causes |
+| **Guardrails Engine** | Multi-rule safety evaluation preventing over-contacting, enforcing cooldowns, and bounding recovery amounts |
+| **Guardrail Boundary Tests** | Dedicated test-case seeder covering all guardrail safety rules |
 | **Razorpay Health Check** | Direct test-mode connectivity and credential verification |
 
 ---
@@ -25,18 +27,21 @@ recovery-agent/
 │
 ├── backend/
 │   ├── app/
-│   │   ├── __init__.py          # Package marker
-│   │   ├── main.py              # FastAPI app & REST endpoints
-│   │   ├── database.py          # Database engine, session, and auto-migration
-│   │   ├── models.py            # LossEvent, PipelineRun, AuditLog ORM models
-│   │   ├── seed_data.py         # Synthetic data generator (50 records)
+│   │   ├── __init__.py                  # Package marker
+│   │   ├── main.py                      # FastAPI app & REST endpoints
+│   │   ├── database.py                  # Database engine, session, and auto-migration
+│   │   ├── models.py                    # LossEvent, PipelineRun, AuditLog ORM models
+│   │   ├── seed_data.py                 # Synthetic data generator
 │   │   └── pipeline/
-│   │       ├── __init__.py      # Pipeline package marker
-│   │       ├── detect.py        # Loss event validation & detection
-│   │       ├── root_cause.py    # Rule-based & Groq LLM root-cause analyzer
-│   │       └── runner.py        # Pipeline orchestrator & CLI runner
+│   │       ├── __init__.py              # Pipeline package marker
+│   │       ├── detect.py                # Loss event validation & detection
+│   │       ├── root_cause.py            # Rule-based & Groq LLM root-cause analyzer
+│   │       ├── strategy.py              # Root cause to recovery strategy mapping
+│   │       ├── guardrails.py            # Safety guardrail rules & policy checks
+│   │       ├── runner.py                # Pipeline orchestrator & CLI runner
+│   │       └── seed_guardrail_test_cases.py # Boundary test case seeder
 │   │
-│   ├── .env.example             # Environment variable template
+│   ├── .env.example                     # Environment variable template
 │   ├── .gitignore
 │   └── requirements.txt
 │
@@ -93,31 +98,40 @@ RAZORPAY_KEY_SECRET=your_razorpay_secret_here
 # Groq LLM Configuration (Root Cause Analysis Fallback)
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 GROQ_MODEL=qwen/qwen3.8-27b
+
+# Recovery Guardrails Configuration
+GUARDRAIL_COOLDOWN_HOURS=12
 ```
 
-> **Note:** The server starts normally even without API keys. Unconfigured services will report `not_configured` or fallback gracefully to offline handling.
+> **Note:** The server starts normally even without third-party API keys. Unconfigured services report `not_configured` or fallback gracefully to offline handling.
 
 ### 5. Seed the database
 
-Run from the `backend/` directory:
+Populate the database with initial failed payment loss events:
 
 ```bash
 python -m app.seed_data
 ```
 
-### 6. Run the Detection & Root Cause Analysis Pipeline
-
-You can run the pipeline directly via CLI:
+Optionally seed dedicated guardrail boundary test cases:
 
 ```bash
-# Process all unanalyzed loss events
+python -m app.pipeline.seed_guardrail_test_cases
+```
+
+### 6. Run the Pipeline via CLI
+
+You can run the pipeline directly from the command line:
+
+```bash
+# Process unanalyzed loss events (detection + root-cause classification)
 python -m app.pipeline.runner
 
 # Reprocess all events (force update)
 python -m app.pipeline.runner --force
 ```
 
-### 7. Start the FastAPI server
+### 7. Start the FastAPI Server
 
 ```bash
 uvicorn app.main:app --reload
@@ -129,22 +143,31 @@ The server starts at: **http://127.0.0.1:8000**
 
 ## API Reference
 
-### Health & Events
+### Health & Event Data
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/health` | Server liveness check |
-| `GET` | `/health/razorpay` | Razorpay credential verification |
-| `GET` | `/events` | List all seeded loss events |
+| `GET` | `/health/razorpay` | Razorpay credential & test connection verification |
+| `GET` | `/events` | List all recorded loss events |
 | `GET` | `/events/summary` | Aggregate statistics by failure code and payment type |
 
-### Pipeline & Diagnostics
+### Detection & Root Cause Analysis
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/pipeline/run-phase2` | Trigger detection & root cause pipeline execution (`?force=true` optional) |
-| `GET` | `/pipeline/results` | Retrieve all pipeline runs with root cause classifications |
-| `GET` | `/audit-log/{event_id}` | Retrieve chronological audit trail for a specific event |
+| `POST` | `/pipeline/run-phase2` | Execute detection and root-cause classification (`?force=true` optional) |
+| `GET` | `/pipeline/results` | List pipeline runs with root-cause classifications joined with loss events |
+| `GET` | `/audit-log/{event_id}` | Chronological audit trail for a specific event |
+
+### Strategy Selection & Safety Guardrails
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/pipeline/run-phase3` | Execute strategy selection and guardrail evaluation (`?force=true` optional) |
+| `GET` | `/pipeline/cleared` | List all pipeline runs that passed all guardrails (eligible for recovery) |
+| `GET` | `/pipeline/blocked` | List all pipeline runs blocked by guardrails with reason details |
+| `POST` | `/seed/guardrail-test-cases` | Seed idempotent test cases covering all guardrail boundary scenarios |
 
 Interactive API documentation:
 - **Swagger UI:** http://127.0.0.1:8000/docs
@@ -152,15 +175,45 @@ Interactive API documentation:
 
 ---
 
-## Root Cause Analysis Classification
+## Root Cause Analysis
 
-The hybrid analyzer categorizes failed payment events into standard failure categories:
+The root cause analyzer categorizes failed payment events into standard categories:
 
-- `insufficient_funds` &rarr; Customer account balance insufficient
-- `card_expired` &rarr; Card validity expired
-- `bank_timeout` &rarr; Issuer bank or network timed out
-- `otp_failed` &rarr; 3DS / OTP authentication failed
-- `issuer_declined` &rarr; Declined by issuing bank
-- `fraud_risk` &rarr; Suspected fraud / high risk transaction
+1. **Card Expired**: Card validity expired.
+2. **Insufficient Funds**: Customer account balance insufficient.
+3. **Bank/Network Timeout**: Issuer bank or payment gateway network timeout.
+4. **OTP Verification Failed**: 3DS / OTP authentication failed or expired.
+5. **Issuer Declined Transaction**: Explicit decline from the customer's bank.
+6. **Unclassified — Needs Review**: Ambiguous failure needing manual investigation.
 
 When encountering unmapped or free-text errors (e.g. `3DS_AUTH_TIMEOUT`, `auth_error_unmapped`), the system calls the Groq LLM with a strict JSON classification prompt to resolve the underlying root cause with confidence scoring and reasoning.
+
+---
+
+## Recovery Strategy Selection
+
+Each classified root cause is mapped to a tailored recovery strategy:
+
+| Classified Root Cause | Selected Recovery Strategy | Action |
+|---|---|---|
+| **Card Expired** | `send_update_payment_method_link` | Prompt customer to update expired card details |
+| **Insufficient Funds** | `retry_in_48_hours` | Schedule intelligent retry after salary/balance window |
+| **Bank/Network Timeout** | `retry_immediately` | Immediate retry to capture transient network recovery |
+| **OTP Verification Failed** | `resend_checkout_link_now` | Re-issue checkout/payment link with fresh authentication |
+| **Issuer Declined Transaction** | `escalate_to_human_review` | Flag for account manager or support intervention |
+| **Unclassified — Needs Review** | `escalate_to_human_review` | Require manual review before taking action |
+
+---
+
+## Safety Guardrails
+
+Before any automated recovery action can be executed, every candidate transaction must pass four strict guardrail checks (evaluated without short-circuiting):
+
+1. **Maximum Attempts Exceeded (`max_attempts_exceeded`)**:
+   Prevents spamming customers. Blocks recovery if prior failed recovery attempts exceed threshold.
+2. **Cooldown Period Active (`cooldown_active`)**:
+   Enforces a mandatory quiet period (configurable via `GUARDRAIL_COOLDOWN_HOURS`, default 12h) since the last contact attempt.
+3. **Amount Ceiling Exceeded (`amount_exceeds_auto_recovery_ceiling`)**:
+   Transactions exceeding the safety threshold (₹4,500 / 450,000 paise) are blocked from automated execution to prevent unintended high-value transfers.
+4. **Escalation Review Required (`escalated_not_auto_actionable`)**:
+   Events marked for human review (`escalate_to_human_review`) are blocked from automated execution to prevent unauthorized customer outreach.
