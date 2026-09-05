@@ -11,6 +11,9 @@ Phase 2 columns populated by the detection + root-cause pipeline:
 
 Phase 3 columns populated by the strategy + guardrail pipeline:
   PipelineRun.strategy, PipelineRun.guardrail_passed, PipelineRun.guardrail_reason
+
+Phase 5 columns populated by the outcome measurement pipeline:
+  PipelineRun.outcome, PipelineRun.recovered_amount, PipelineRun.updated_at
 """
 from datetime import datetime, timezone
 
@@ -129,6 +132,7 @@ class PipelineRun(Base):
     Phase 1: only `event_id` and `timestamp` are meaningful.
     Phase 2+: root_cause, strategy, guardrail_passed, guardrail_reason populated.
     Phase 4+: razorpay_link_id, razorpay_short_url, action_taken, scheduled_for populated.
+    Phase 5+: outcome, recovered_amount, updated_at populated.
     All unused columns remain NULL.
     """
 
@@ -210,6 +214,12 @@ class PipelineRun(Base):
         Integer,
         nullable=True,
         comment='Phase 5+: amount actually recovered, in paise',
+    )
+
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment='Phase 5: UTC timestamp of the last outcome measurement update',
     )
 
     timestamp: Mapped[datetime] = mapped_column(

@@ -85,6 +85,8 @@ def migrate_db() -> None:
         "ALTER TABLE pipeline_runs ADD COLUMN razorpay_short_url TEXT",
         # Phase 4: UTC scheduled execution time (only set for retry_in_48_hours)
         "ALTER TABLE pipeline_runs ADD COLUMN scheduled_for TIMESTAMP",
+        # Phase 5: UTC timestamp of last outcome measurement update
+        "ALTER TABLE pipeline_runs ADD COLUMN updated_at TIMESTAMP",
     ]
     with engine.connect() as conn:
         for sql in migrations:

@@ -1,5 +1,5 @@
 """
-pipeline/runner.py — Pipeline orchestrator (Phases 2, 3, and 4).
+pipeline/runner.py — Pipeline orchestrator (Phases 2, 3, 4, and 5).
 
 Phase 2 pipeline:
     detect_loss()  →  analyze_root_cause()
@@ -9,6 +9,9 @@ Phase 3 pipeline:
 
 Phase 4 pipeline:
     execute_action()   → Razorpay Payment Link creation for cleared events
+
+Phase 5 pipeline:
+    check_payment_status()  → live Razorpay status fetch + outcome measurement
 
 All pipelines are idempotent by default.
 
@@ -303,6 +306,99 @@ def run_pipeline_phase4(db) -> dict:
 
     return summary
 
+
+# ---------------------------------------------------------------------------
+# Phase 5 summary type
+# ---------------------------------------------------------------------------
+def _empty_phase5_summary() -> dict:
+    return {
+        "total_checked":         0,
+        "recovered_count":       0,
+        "pending_count":         0,
+        "not_recovered_count":   0,
+        "measurement_failed_count": 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 Orchestrator
+# ---------------------------------------------------------------------------
+def run_pipeline_phase5(db) -> dict:
+    """
+    Run the Phase 5 outcome measurement pipeline.
+
+    Fetches all PipelineRun records with a valid razorpay_link_id and calls
+    check_payment_status() for every one.  Unlike earlier phases, this runner
+    does NOT skip records that already have an outcome — Razorpay status is
+    always re-fetched to capture real payment completions.
+
+    Previously confirmed 'recovered' outcomes are preserved if the API call
+    fails (handled inside check_payment_status).
+
+    Individual failures do not abort the batch.
+
+    Args:
+        db: An active SQLAlchemy session (caller owns lifecycle).
+
+    Returns:
+        Summary dict with measurement outcome counts.
+    """
+    from app.pipeline.measure import check_payment_status
+
+    # Fetch all runs with a valid Razorpay Payment Link ID
+    executed_runs: list[PipelineRun] = (
+        db.query(PipelineRun)
+        .filter(
+            PipelineRun.razorpay_link_id.isnot(None),
+            PipelineRun.razorpay_link_id != "",
+        )
+        .order_by(PipelineRun.event_id.asc())
+        .all()
+    )
+
+    summary = _empty_phase5_summary()
+    summary["total_checked"] = len(executed_runs)
+
+    for run in executed_runs:
+        try:
+            event = run.event
+            if event is None:
+                print(
+                    f"[WARN] PipelineRun id={run.id} has no associated LossEvent "
+                    f"— skipping Phase 5 measurement.",
+                    file=sys.stderr,
+                )
+                summary["measurement_failed_count"] += 1
+                summary["total_checked"] -= 1
+                continue
+
+            result = check_payment_status(event, run, db)
+            result_status = result.get("status")
+
+            if result_status == "measured":
+                outcome = result.get("outcome", "")
+                if outcome == "recovered":
+                    summary["recovered_count"] += 1
+                elif outcome == "pending":
+                    summary["pending_count"] += 1
+                elif outcome == "not_recovered":
+                    summary["not_recovered_count"] += 1
+            elif result_status == "measurement_failed":
+                summary["measurement_failed_count"] += 1
+                # If the previous recovered state was preserved, still count it
+                if result.get("preserved") and result.get("outcome") == "recovered":
+                    summary["recovered_count"] += 1
+            elif result_status == "skipped":
+                summary["total_checked"] -= 1  # exclude no-link rows from count
+
+        except Exception as exc:
+            summary["measurement_failed_count"] += 1
+            print(
+                f"[ERROR] Phase 5 measurement failed for PipelineRun id={run.id}: {exc}",
+                file=sys.stderr,
+            )
+
+    return summary
 
 
 def _cli() -> None:

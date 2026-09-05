@@ -19,6 +19,11 @@ Endpoints:
     POST /pipeline/run-phase4         → run recovery execution pipeline
     GET  /pipeline/executed           → all runs where razorpay_link_id is set
     POST /pipeline/execute-one/{event_id} → execute one event (demo endpoint)
+
+    POST /pipeline/run-phase5             → measure all executed payment links
+    GET  /pipeline/summary                → live recovery analytics summary
+    GET  /pipeline/outcomes               → all runs with a non-null outcome
+    POST /pipeline/measure-one/{event_id} → measure one event (demo endpoint)
 """
 from __future__ import annotations
 
@@ -65,9 +70,10 @@ app = FastAPI(
         "Backend service with SQLite database, ORM models, synthetic data seeding, "
         "Razorpay integration, AI-powered root-cause classification, "
         "deterministic strategy selection, guardrail enforcement, "
-        "and automated recovery execution via Razorpay Payment Links."
+        "automated recovery execution via Razorpay Payment Links, "
+        "and live payment outcome measurement."
     ),
-    version="4.0.0",
+    version="5.0.0",
     lifespan=lifespan,
 )
 
@@ -640,3 +646,197 @@ def execute_one(event_id: int, db: Session = Depends(get_db)) -> JSONResponse:
 
     return JSONResponse(content=response_body)
 
+
+# ===========================================================================
+# PHASE 5 ENDPOINTS
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 15 — POST /pipeline/run-phase5
+# ---------------------------------------------------------------------------
+@app.post("/pipeline/run-phase5", summary="Run Phase 5 payment outcome measurement")
+def run_phase5(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Fetches live Razorpay Payment Link status for every executed PipelineRun
+    and updates outcome, recovered_amount, and updated_at.
+
+    Unlike earlier phases, this endpoint always re-fetches Razorpay status —
+    it does NOT skip records that already have an outcome, so payment
+    completions are detected in real time.
+
+    Previously confirmed 'recovered' outcomes are preserved if the Razorpay
+    API call fails during measurement.
+
+    Returns:
+        Summary with total_checked, recovered_count, pending_count,
+        not_recovered_count, and measurement_failed_count.
+    """
+    from app.pipeline.runner import run_pipeline_phase5
+
+    summary = run_pipeline_phase5(db)
+    return JSONResponse(content=summary)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 16 — GET /pipeline/summary
+# ---------------------------------------------------------------------------
+@app.get("/pipeline/summary", summary="Live recovery analytics summary")
+def pipeline_summary(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Computes and returns a live recovery analytics summary from the current
+    database state.
+
+    All values are calculated from PipelineRun and LossEvent records directly
+    — never from AuditLog history, to prevent double-counting.
+
+    Metrics returned:
+        - total_executed_events    : runs with a valid razorpay_link_id
+        - total_at_risk_amount     : sum of event.amount for executed runs
+        - eligible_at_risk_amount  : sum of event.amount for guardrail-cleared runs
+        - total_recovered_amount   : sum of recovered_amount where outcome='recovered'
+        - recovery_rate            : (recovered / at_risk) * 100
+        - recovered_count          : count of outcome='recovered' runs
+        - pending_count            : count of outcome='pending' runs
+        - not_recovered_count      : count of outcome='not_recovered' runs
+        - guardrail_blocked_value  : sum of event.amount where guardrail_passed=False
+        - by_root_cause            : breakdown by each of the 6 root cause categories
+    """
+    from app.pipeline.measure import get_recovery_summary
+
+    summary = get_recovery_summary(db)
+    return JSONResponse(content=summary)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 17 — GET /pipeline/outcomes
+# ---------------------------------------------------------------------------
+@app.get("/pipeline/outcomes", summary="List all PipelineRun records with a non-null outcome")
+def pipeline_outcomes(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Returns all PipelineRun records where outcome is not NULL,
+    sorted by updated_at DESC (falls back to timestamp DESC for older rows).
+
+    Includes full context for the hackathon demo:
+        event_id, order_id, customer_id, customer_name, amount,
+        root_cause, strategy, guardrail_passed, razorpay_link_id,
+        razorpay_short_url, outcome, recovered_amount, updated_at.
+    """
+    from sqlalchemy import case, nullslast
+
+    def _fmt_dt(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    runs: list[PipelineRun] = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.outcome.isnot(None))
+        .order_by(
+            nullslast(
+                case(
+                    (PipelineRun.updated_at.isnot(None), PipelineRun.updated_at),
+                    else_=PipelineRun.timestamp,
+                ).desc()
+            )
+        )
+        .all()
+    )
+
+    results = []
+    for run in runs:
+        event: LossEvent | None = run.event
+        results.append(
+            {
+                "event_id":          run.event_id,
+                "pipeline_run_id":   run.id,
+                "order_id":          event.order_id if event else None,
+                "customer_id":       event.customer_id if event else None,
+                "customer_name":     event.customer_name if event else None,
+                "amount":            event.amount if event else None,
+                "root_cause":        run.root_cause,
+                "strategy":          run.strategy,
+                "guardrail_passed":  run.guardrail_passed,
+                "razorpay_link_id":  run.razorpay_link_id,
+                "razorpay_short_url": run.razorpay_short_url,
+                "outcome":           run.outcome,
+                "recovered_amount":  run.recovered_amount,
+                "updated_at":        _fmt_dt(run.updated_at),
+            }
+        )
+
+    return JSONResponse(content=results)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 18 — POST /pipeline/measure-one/{event_id}
+# ---------------------------------------------------------------------------
+@app.post(
+    "/pipeline/measure-one/{event_id}",
+    summary="Measure payment outcome for a single event (demo endpoint)",
+)
+def measure_one(event_id: int, db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Fetches the live Razorpay Payment Link status for one specific LossEvent
+    and updates its outcome in the database.
+
+    Intended for live hackathon demos to show real-time recovery detection.
+
+    Behaviour:
+        - 404  if LossEvent not found.
+        - 422  if no PipelineRun exists for this event.
+        - 422  if PipelineRun has no razorpay_link_id.
+        - 200  with full measurement result on success or failure.
+    """
+    from fastapi import HTTPException
+    from app.pipeline.measure import check_payment_status
+
+    # ── Find the LossEvent ──────────────────────────────────────────────────────────────
+    event: LossEvent | None = db.query(LossEvent).filter(LossEvent.id == event_id).first()
+    if event is None:
+        raise HTTPException(status_code=404, detail=f"LossEvent id={event_id} not found.")
+
+    # ── Find its PipelineRun ───────────────────────────────────────────────────────
+    run: PipelineRun | None = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.event_id == event_id)
+        .first()
+    )
+    if run is None:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "event_id": event_id,
+                "error": "No PipelineRun found for this event. Run the pipeline first.",
+            },
+        )
+
+    # ── Verify razorpay_link_id exists ─────────────────────────────────────────
+    if not run.razorpay_link_id or not run.razorpay_link_id.strip():
+        return JSONResponse(
+            status_code=422,
+            content={
+                "event_id": event_id,
+                "error": (
+                    "PipelineRun has no razorpay_link_id. "
+                    "Run Phase 4 first to create a Payment Link."
+                ),
+            },
+        )
+
+    # ── Measure ─────────────────────────────────────────────────────────────────
+    result = check_payment_status(event, run, db)
+
+    # Build a rich response with event context for the demo
+    def _fmt_dt(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    return JSONResponse(
+        content={
+            "event_id":          event_id,
+            "order_id":          event.order_id,
+            "customer_id":       event.customer_id,
+            "customer_name":     event.customer_name,
+            "razorpay_link_id":  run.razorpay_link_id,
+            "razorpay_short_url": run.razorpay_short_url,
+            "updated_at":        _fmt_dt(run.updated_at),
+            **result,
+        }
+    )
