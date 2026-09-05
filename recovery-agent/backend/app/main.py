@@ -35,6 +35,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -75,6 +76,17 @@ app = FastAPI(
     ),
     version="5.0.0",
     lifespan=lifespan,
+)
+
+# ---------------------------------------------------------------------------
+# CORS — allow the Vite dev server (Phase 6 frontend)
+# ---------------------------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Accept"],
 )
 
 
