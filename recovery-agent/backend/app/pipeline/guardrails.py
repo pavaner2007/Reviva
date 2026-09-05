@@ -19,6 +19,7 @@ Final decision written to:
 
 One AuditLog row is written at stage="guardrail" describing PASSED or BLOCKED.
 """
+
 from __future__ import annotations
 
 import os
@@ -39,10 +40,10 @@ AMOUNT_CEILING_PAISE: int = 450_000  # ₹4,500
 ESCALATION_STRATEGY = "escalate_to_human_review"
 
 # Fail reason codes (deterministic, snake_case)
-REASON_MAX_ATTEMPTS    = "max_attempts_exceeded"
-REASON_COOLDOWN        = "cooldown_active"
-REASON_ESCALATION      = "escalated_not_auto_actionable"
-REASON_AMOUNT_CEILING  = "amount_exceeds_auto_recovery_ceiling"
+REASON_MAX_ATTEMPTS = "max_attempts_exceeded"
+REASON_COOLDOWN = "cooldown_active"
+REASON_ESCALATION = "escalated_not_auto_actionable"
+REASON_AMOUNT_CEILING = "amount_exceeds_auto_recovery_ceiling"
 
 
 # ---------------------------------------------------------------------------
@@ -76,10 +77,6 @@ def _get_cooldown_hours() -> int:
     except (ValueError, TypeError):
         return 12
 
-
-# ---------------------------------------------------------------------------
-# Individual guardrail checks
-# ---------------------------------------------------------------------------
 
 def check_max_attempts(
     pipeline_run: PipelineRun,
@@ -181,6 +178,7 @@ def check_amount_ceiling(event: LossEvent) -> bool:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def check_guardrails(
     event: LossEvent,
