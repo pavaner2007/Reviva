@@ -12,6 +12,7 @@ Idempotency:
     A "detect" AuditLog entry is only written when a new PipelineRun
     is created, not on subsequent calls.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -22,18 +23,12 @@ from sqlalchemy.orm import Session
 from app.models import AuditLog, LossEvent, PipelineRun
 
 
-# ---------------------------------------------------------------------------
-# Return type
-# ---------------------------------------------------------------------------
 class DetectResult(TypedDict):
-    detected: bool                # True if event.status == "failed"
-    pipeline_run_id: int | None   # PipelineRun.id (None if not detected)
-    created_new: bool             # True if a new PipelineRun was inserted
+    detected: bool
+    pipeline_run_id: int | None
+    created_new: bool
 
 
-# ---------------------------------------------------------------------------
-# Core function
-# ---------------------------------------------------------------------------
 def detect_loss(event: LossEvent, db: Session) -> DetectResult:
     """
     Detect whether a LossEvent is a confirmed loss and ensure a
@@ -46,34 +41,27 @@ def detect_loss(event: LossEvent, db: Session) -> DetectResult:
     Returns:
         DetectResult with detected, pipeline_run_id, and created_new fields.
     """
-    # ── Gate: only "failed" events are confirmed loss events ────────────────
     if event.status != "failed":
         return DetectResult(detected=False, pipeline_run_id=None, created_new=False)
 
-    # ── Check for an existing PipelineRun (idempotency) ────────────────────
     existing_run: PipelineRun | None = (
-        db.query(PipelineRun)
-        .filter(PipelineRun.event_id == event.id)
-        .first()
+        db.query(PipelineRun).filter(PipelineRun.event_id == event.id).first()
     )
 
     if existing_run is not None:
-        # Already has a pipeline run — nothing to create
         return DetectResult(
             detected=True,
             pipeline_run_id=existing_run.id,
             created_new=False,
         )
 
-    # ── Create a new PipelineRun ────────────────────────────────────────────
     pipeline_run = PipelineRun(
         event_id=event.id,
         timestamp=datetime.now(timezone.utc),
     )
     db.add(pipeline_run)
-    db.flush()  # Populates pipeline_run.id without committing the transaction
+    db.flush()
 
-    # ── Write AuditLog for the detect stage ────────────────────────────────
     audit = AuditLog(
         event_id=event.id,
         stage="detect",
