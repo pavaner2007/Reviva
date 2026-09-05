@@ -81,6 +81,10 @@ def migrate_db() -> None:
         "ALTER TABLE pipeline_runs ADD COLUMN root_cause_method TEXT",
         # Phase 3: guardrail_reason stores comma-separated failed guardrail reasons
         "ALTER TABLE pipeline_runs ADD COLUMN guardrail_reason TEXT",
+        # Phase 4: short URL returned by Razorpay payment link creation
+        "ALTER TABLE pipeline_runs ADD COLUMN razorpay_short_url TEXT",
+        # Phase 4: UTC scheduled execution time (only set for retry_in_48_hours)
+        "ALTER TABLE pipeline_runs ADD COLUMN scheduled_for TIMESTAMP",
     ]
     with engine.connect() as conn:
         for sql in migrations:

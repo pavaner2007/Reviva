@@ -127,7 +127,9 @@ class PipelineRun(Base):
     Tracks one full execution of the recovery pipeline for a given LossEvent.
 
     Phase 1: only `event_id` and `timestamp` are meaningful.
-    All Phase-2+ columns (root_cause, strategy, …) remain NULL.
+    Phase 2+: root_cause, strategy, guardrail_passed, guardrail_reason populated.
+    Phase 4+: razorpay_link_id, razorpay_short_url, action_taken, scheduled_for populated.
+    All unused columns remain NULL.
     """
 
     __tablename__ = "pipeline_runs"
@@ -183,19 +185,31 @@ class PipelineRun(Base):
     razorpay_link_id: Mapped[str | None] = mapped_column(
         String(128),
         nullable=True,
-        comment='Phase 2: Razorpay payment-link ID created for recovery',
+        comment='Phase 4: Razorpay payment-link ID created for recovery',
+    )
+
+    razorpay_short_url: Mapped[str | None] = mapped_column(
+        String(256),
+        nullable=True,
+        comment='Phase 4: Short URL returned by Razorpay for the payment link',
+    )
+
+    scheduled_for: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment='Phase 4: UTC timestamp when this recovery action is scheduled to execute (only set for retry_in_48_hours)',
     )
 
     outcome: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,
-        comment='Phase 2: result of the recovery attempt (e.g. "recovered")',
+        comment='Phase 5+: result of the recovery attempt (e.g. "recovered")',
     )
 
     recovered_amount: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,
-        comment='Phase 2: amount actually recovered, in paise',
+        comment='Phase 5+: amount actually recovered, in paise',
     )
 
     timestamp: Mapped[datetime] = mapped_column(

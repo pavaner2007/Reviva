@@ -1,5 +1,5 @@
 """
-pipeline/runner.py — Pipeline orchestrator (Phase 2 and Phase 3).
+pipeline/runner.py — Pipeline orchestrator (Phases 2, 3, and 4).
 
 Phase 2 pipeline:
     detect_loss()  →  analyze_root_cause()
@@ -7,7 +7,10 @@ Phase 2 pipeline:
 Phase 3 pipeline:
     select_strategy()  →  check_guardrails()
 
-Both pipelines are idempotent by default (force=False skips already-processed records).
+Phase 4 pipeline:
+    execute_action()   → Razorpay Payment Link creation for cleared events
+
+All pipelines are idempotent by default.
 
 CLI usage (run from the backend/ directory):
     python -m app.pipeline.runner            # Phase 2 normal run
@@ -208,10 +211,100 @@ def run_pipeline_phase3(db, force: bool = False) -> dict:
 
     return summary
 
+# ---------------------------------------------------------------------------
+# Phase 4 summary type
+# ---------------------------------------------------------------------------
+def _empty_phase4_summary() -> dict:
+    return {
+        "total_eligible": 0,
+        "successfully_executed": 0,
+        "failed_executions": 0,
+        "skipped_already_executed": 0,
+        "blocked_rejected": 0,
+    }
+
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# Phase 4 Orchestrator
 # ---------------------------------------------------------------------------
+def run_pipeline_phase4(db) -> dict:
+    """
+    Run the Phase 4 recovery execution pipeline.
+
+    Fetches all PipelineRun records with guardrail_passed == True that have
+    not yet been executed (razorpay_link_id is None) and calls execute_action()
+    for each one.  A 0.5 s rate-limit delay is applied between consecutive
+    actual Razorpay API calls.  Individual failures do not abort the batch.
+
+    Args:
+        db: An active SQLAlchemy session (caller owns lifecycle).
+
+    Returns:
+        Summary dict with execution outcome counts.
+    """
+    import time
+    from app.pipeline.execute import execute_action
+
+    # Fetch all guardrail-cleared runs, ordered for deterministic processing
+    all_cleared: list[PipelineRun] = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.guardrail_passed.is_(True))
+        .order_by(PipelineRun.event_id.asc())
+        .all()
+    )
+
+    summary = _empty_phase4_summary()
+    summary["total_eligible"] = len(all_cleared)
+
+    made_real_api_call = False  # track to apply rate-limit delay correctly
+
+    for run in all_cleared:
+        try:
+            event: LossEvent | None = run.event
+            if event is None:
+                print(
+                    f"[WARN] PipelineRun id={run.id} has no associated LossEvent — skipping.",
+                    file=sys.stderr,
+                )
+                summary["blocked_rejected"] += 1
+                continue
+
+            # Idempotency: skip already-executed runs without sleeping
+            if run.razorpay_link_id is not None:
+                summary["skipped_already_executed"] += 1
+                continue
+
+            # Rate-limit: pause between actual API calls only
+            if made_real_api_call:
+                time.sleep(1.5)
+
+            result = execute_action(event, run, db)
+            made_real_api_call = True  # execute_action attempted (or failed) an API call
+
+            status = result.get("status")
+            if status == "success":
+                summary["successfully_executed"] += 1
+            elif status == "skipped":
+                # Idempotency detected inside execute_action (race condition guard)
+                summary["skipped_already_executed"] += 1
+                made_real_api_call = False  # no actual API call was made
+            elif status in ("blocked", "rejected"):
+                summary["blocked_rejected"] += 1
+                made_real_api_call = False
+            else:  # "failed"
+                summary["failed_executions"] += 1
+
+        except Exception as exc:
+            summary["failed_executions"] += 1
+            print(
+                f"[ERROR] Phase 4 pipeline failed for PipelineRun id={run.id}: {exc}",
+                file=sys.stderr,
+            )
+
+    return summary
+
+
+
 def _cli() -> None:
     """Command-line interface for running the Phase 2 pipeline."""
     force = "--force" in sys.argv

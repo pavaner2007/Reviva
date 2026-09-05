@@ -1,22 +1,24 @@
 """
 main.py — FastAPI application entry point.
 
-Phase 1 endpoints (unchanged):
+Endpoints:
     GET  /health              → liveness check
     GET  /events              → list all LossEvent records
     GET  /events/summary      → live aggregate stats
     GET  /health/razorpay     → Razorpay test-mode credential check
 
-Phase 2 endpoints:
-    POST /pipeline/run-phase2 → run detection + root-cause pipeline
-    GET  /pipeline/results    → PipelineRun results joined with LossEvent
-    GET  /audit-log/{event_id}→ full audit trail for one event
+    POST /pipeline/run-phase2     → run detection + root-cause pipeline
+    GET  /pipeline/results        → PipelineRun results joined with LossEvent
+    GET  /audit-log/{event_id}    → full audit trail for one event
 
-Phase 3 endpoints:
     POST /pipeline/run-phase3     → run strategy + guardrail pipeline
     GET  /pipeline/blocked        → all runs where guardrail_passed == False
     GET  /pipeline/cleared        → all runs where guardrail_passed == True
     POST /seed/guardrail-test-cases → additive idempotent test case seeder
+
+    POST /pipeline/run-phase4         → run recovery execution pipeline
+    GET  /pipeline/executed           → all runs where razorpay_link_id is set
+    POST /pipeline/execute-one/{event_id} → execute one event (demo endpoint)
 """
 from __future__ import annotations
 
@@ -62,9 +64,10 @@ app = FastAPI(
     description=(
         "Backend service with SQLite database, ORM models, synthetic data seeding, "
         "Razorpay integration, AI-powered root-cause classification, "
-        "deterministic strategy selection, and guardrail enforcement."
+        "deterministic strategy selection, guardrail enforcement, "
+        "and automated recovery execution via Razorpay Payment Links."
     ),
-    version="3.0.0",
+    version="4.0.0",
     lifespan=lifespan,
 )
 
@@ -484,3 +487,156 @@ def seed_guardrail_test_cases(db: Session = Depends(get_db)) -> JSONResponse:
 
     result = seed_all(db)
     return JSONResponse(content=result)
+
+
+# ===========================================================================
+# PHASE 4 ENDPOINTS
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 12 — POST /pipeline/run-phase4
+# ---------------------------------------------------------------------------
+@app.post("/pipeline/run-phase4", summary="Run Phase 4 recovery execution pipeline")
+def run_phase4(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Runs the Phase 4 execution pipeline over all guardrail-cleared PipelineRun records.
+
+    - Only processes records where guardrail_passed == True.
+    - Creates Razorpay test-mode Payment Links for eligible strategies.
+    - Idempotent: already-executed events are skipped (no duplicate links created).
+    - A 0.5 s rate-limit delay is applied between consecutive Razorpay API calls.
+    - Individual failures do not abort the batch.
+
+    Returns:
+        Summary with total_eligible, successfully_executed, failed_executions,
+        skipped_already_executed, and blocked_rejected counts.
+    """
+    from app.pipeline.runner import run_pipeline_phase4
+
+    summary = run_pipeline_phase4(db)
+    return JSONResponse(content=summary)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 13 — GET /pipeline/executed
+# ---------------------------------------------------------------------------
+@app.get("/pipeline/executed", summary="List all executed PipelineRun records with Razorpay links")
+def pipeline_executed(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Returns all PipelineRun records where razorpay_link_id is not NULL,
+    ordered by event_id ascending.
+
+    These are events that have had a Razorpay Payment Link successfully created.
+    """
+
+    def _fmt_dt(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    runs: list[PipelineRun] = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.razorpay_link_id.isnot(None))
+        .order_by(PipelineRun.event_id.asc())
+        .all()
+    )
+
+    results = []
+    for run in runs:
+        event: LossEvent | None = run.event
+        results.append(
+            {
+                "event_id":          run.event_id,
+                "pipeline_run_id":   run.id,
+                "order_id":          event.order_id if event else None,
+                "customer_id":       event.customer_id if event else None,
+                "customer_name":     event.customer_name if event else None,
+                "amount":            event.amount if event else None,
+                "root_cause":        run.root_cause,
+                "strategy":          run.strategy,
+                "action_taken":      run.action_taken,
+                "guardrail_passed":  run.guardrail_passed,
+                "razorpay_link_id":  run.razorpay_link_id,
+                "razorpay_short_url": run.razorpay_short_url,
+                "scheduled_for":     _fmt_dt(run.scheduled_for),
+                "timestamp":         _fmt_dt(run.timestamp),
+            }
+        )
+
+    return JSONResponse(content=results)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 14 — POST /pipeline/execute-one/{event_id}
+# ---------------------------------------------------------------------------
+@app.post(
+    "/pipeline/execute-one/{event_id}",
+    summary="Execute recovery for a single event (demo endpoint)",
+)
+def execute_one(event_id: int, db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Executes recovery for one specific LossEvent by event_id.
+
+    Intended for live hackathon demos to show real-time Payment Link creation.
+
+    Behaviour:
+        - 404  if event not found.
+        - 422  if PipelineRun does not exist for this event.
+        - 403  if guardrail_passed is not True.
+        - 200  with status=rejected if strategy is escalate_to_human_review.
+        - 200  with status=skipped  if already executed (idempotency).
+        - 200  with status=success  if Payment Link created successfully.
+        - 200  with status=failed   if Razorpay API call failed.
+    """
+    from fastapi import HTTPException
+    from app.pipeline.execute import execute_action
+
+    # ── Find the LossEvent ─────────────────────────────────────────────────
+    event: LossEvent | None = db.query(LossEvent).filter(LossEvent.id == event_id).first()
+    if event is None:
+        raise HTTPException(status_code=404, detail=f"LossEvent id={event_id} not found.")
+
+    # ── Find its PipelineRun ───────────────────────────────────────────────
+    run: PipelineRun | None = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.event_id == event_id)
+        .first()
+    )
+    if run is None:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "event_id": event_id,
+                "status": "error",
+                "detail": "No PipelineRun found for this event. Run the pipeline first.",
+            },
+        )
+
+    # ── Guardrail gate ─────────────────────────────────────────────────────
+    if run.guardrail_passed is not True:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "event_id": event_id,
+                "status": "blocked",
+                "guardrail_passed": run.guardrail_passed,
+                "guardrail_reason": run.guardrail_reason,
+                "detail": "Guardrail not passed — execution rejected. Razorpay was not called.",
+            },
+        )
+
+    # ── Delegate to execute_action() ───────────────────────────────────────
+    result = execute_action(event, run, db)
+
+    # Build a rich response that includes extra context for the demo
+    response_body = {
+        "event_id":          event_id,
+        "order_id":          event.order_id,
+        "customer_id":       event.customer_id,
+        "customer_name":     event.customer_name,
+        "amount":            event.amount,
+        "root_cause":        run.root_cause,
+        "strategy":          run.strategy,
+        **result,  # status, razorpay_link_id, razorpay_short_url, etc.
+    }
+
+    return JSONResponse(content=response_body)
+
