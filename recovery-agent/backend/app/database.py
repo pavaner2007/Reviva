@@ -68,12 +68,36 @@ def create_session():
     return SessionLocal()
 
 
+def migrate_db() -> None:
+    """
+    Apply any required schema migrations that SQLAlchemy create_all() cannot
+    handle automatically (e.g. adding a column to an existing table).
+
+    Safe to call on every startup — each statement is wrapped in try/except
+    so it becomes a no-op when the column already exists.
+    """
+    migrations = [
+        # Phase 2: root_cause_method column added to pipeline_runs
+        "ALTER TABLE pipeline_runs ADD COLUMN root_cause_method TEXT",
+    ]
+    with engine.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(__import__("sqlalchemy").text(sql))
+                conn.commit()
+            except Exception:
+                # SQLite raises OperationalError: "duplicate column name"
+                # when the column already exists — this is expected and safe.
+                conn.rollback()
+
+
 # ---------------------------------------------------------------------------
 # Table creation helper — called at app startup
 # ---------------------------------------------------------------------------
 def init_db() -> None:
-    """Create all tables if they do not already exist."""
+    """Create all tables if they do not already exist, then run migrations."""
     # Import models so SQLAlchemy's metadata is populated before create_all
     import app.models  # noqa: F401  # side-effect import
 
     Base.metadata.create_all(bind=engine)
+    migrate_db()

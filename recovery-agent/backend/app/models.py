@@ -1,14 +1,15 @@
 """
-models.py — SQLAlchemy ORM models for Phase 1.
+models.py — SQLAlchemy ORM models for the Failed Payment Recovery Agent.
 
 Three tables:
   1. LossEvent   — the core failed-payment record
-  2. PipelineRun — one row per recovery pipeline attempt (Phase 2+ fills most fields)
-  3. AuditLog    — append-only event log per stage (Phase 2+ writes entries)
+  2. PipelineRun — one row per recovery pipeline attempt
+  3. AuditLog    — append-only event log per pipeline stage
 
-Phase 1 note:
-  PipelineRun and AuditLog are defined here for schema completeness.
-  Phase 1 does NOT populate their Phase-2+ columns.
+Phase 2 columns populated by the detection + root-cause pipeline:
+  PipelineRun.root_cause, PipelineRun.root_cause_method
+
+Phase 3+ columns (strategy, guardrail_passed, action_taken, …) remain NULL.
 """
 from datetime import datetime, timezone
 
@@ -146,6 +147,12 @@ class PipelineRun(Base):
         String(128),
         nullable=True,
         comment='Phase 2: classified root cause of the failure',
+    )
+
+    root_cause_method: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        comment='Phase 2: how root cause was determined — rule-based | llm-fallback | unclassified',
     )
 
     strategy: Mapped[str | None] = mapped_column(

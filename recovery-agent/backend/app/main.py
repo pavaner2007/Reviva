@@ -1,13 +1,16 @@
 """
-main.py — FastAPI application entry point for Phase 1.
+main.py — FastAPI application entry point.
 
-Endpoints:
+Phase 1 endpoints (unchanged):
     GET  /health              → liveness check
     GET  /events              → list all LossEvent records
     GET  /events/summary      → live aggregate stats
     GET  /health/razorpay     → Razorpay test-mode credential check
 
-Phase 1 only: no AI, no recovery logic, no background workers.
+Phase 2 endpoints:
+    POST /pipeline/run-phase2 → run detection + root-cause pipeline
+    GET  /pipeline/results    → PipelineRun results joined with LossEvent
+    GET  /audit-log/{event_id}→ full audit trail for one event
 """
 from __future__ import annotations
 
@@ -31,7 +34,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=_BACKEND_DIR / ".env", override=False)
 
 from app.database import get_db, init_db  # noqa: E402
-from app.models import LossEvent  # noqa: E402
+from app.models import AuditLog, LossEvent, PipelineRun  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -51,10 +54,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Failed Payment Recovery Agent",
     description=(
-        "Backend service with SQLite database, ORM models, "
-        "synthetic data seeding, and API health/verification endpoints."
+        "Backend service with SQLite database, ORM models, synthetic data seeding, "
+        "Razorpay integration, and AI-powered root-cause classification."
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -228,3 +231,114 @@ def health_razorpay() -> JSONResponse:
                 "message": safe_message,
             },
         )
+
+
+# ===========================================================================
+# PHASE 2 ENDPOINTS
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 5 — POST /pipeline/run-phase2
+# ---------------------------------------------------------------------------
+@app.post("/pipeline/run-phase2", summary="Run Phase 2 detection + root-cause pipeline")
+def run_phase2(
+    force: bool = False,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    Runs the Phase 2 pipeline over all LossEvent records.
+
+    - Detects confirmed loss events.
+    - Classifies root cause via rule-based mapping or Groq LLM fallback.
+    - Idempotent by default (force=False skips already-classified events).
+    - Use ?force=true to reprocess and update existing classifications.
+    """
+    from app.pipeline.runner import run_pipeline_phase2
+
+    summary = run_pipeline_phase2(db, force=force)
+    return JSONResponse(content=summary)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 6 — GET /pipeline/results
+# ---------------------------------------------------------------------------
+@app.get("/pipeline/results", summary="List PipelineRun results joined with LossEvent")
+def pipeline_results(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Returns all PipelineRun rows joined with their parent LossEvent.
+
+    Includes root cause classification details for Phase 2 verification.
+    """
+    runs: list[PipelineRun] = (
+        db.query(PipelineRun).order_by(PipelineRun.event_id.asc()).all()
+    )
+
+    def _fmt_dt(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    results = []
+    for run in runs:
+        event: LossEvent | None = run.event
+        results.append(
+            {
+                "event_id":          run.event_id,
+                "pipeline_run_id":   run.id,
+                "order_id":          event.order_id if event else None,
+                "customer_id":       event.customer_id if event else None,
+                "failure_code":      event.failure_code if event else None,
+                "amount":            event.amount if event else None,
+                "subscription_id":   event.subscription_id if event else None,
+                "root_cause":        run.root_cause,
+                "root_cause_method": run.root_cause_method,
+                "timestamp":         _fmt_dt(run.timestamp),
+            }
+        )
+
+    return JSONResponse(content=results)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 7 — GET /audit-log/{event_id}
+# ---------------------------------------------------------------------------
+@app.get("/audit-log/{event_id}", summary="Full audit trail for a single LossEvent")
+def get_audit_log(
+    event_id: int,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    Returns all AuditLog entries for the given event_id, ordered by timestamp.
+
+    Returns HTTP 404 if the event does not exist.
+    """
+    from fastapi import HTTPException
+
+    # Verify event exists
+    event = db.query(LossEvent).filter(LossEvent.id == event_id).first()
+    if event is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"LossEvent with id={event_id} not found.",
+        )
+
+    logs: list[AuditLog] = (
+        db.query(AuditLog)
+        .filter(AuditLog.event_id == event_id)
+        .order_by(AuditLog.timestamp.asc())
+        .all()
+    )
+
+    def _fmt_dt(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    return JSONResponse(
+        content=[
+            {
+                "id":       log.id,
+                "event_id": log.event_id,
+                "stage":    log.stage,
+                "detail":   log.detail,
+                "timestamp":_fmt_dt(log.timestamp),
+            }
+            for log in logs
+        ]
+    )
