@@ -1,6 +1,6 @@
 # Reviva
 
-An AI-powered failed payment recovery agent that detects payment failures, analyzes root causes with hybrid rule/LLM classification, determines targeted recovery strategies, enforces safety guardrails, autonomously executes recovery actions via the Razorpay API, and measures real payment outcomes in real time.
+An AI-powered failed payment recovery agent that detects payment failures, analyzes root causes with hybrid rule/LLM classification, determines targeted recovery strategies, enforces safety guardrails, autonomously executes recovery actions via the Razorpay API, measures real payment outcomes in real time, and presents everything in a premium React dashboard.
 
 ---
 
@@ -21,6 +21,7 @@ An AI-powered failed payment recovery agent that detects payment failures, analy
 | **Execution Safety Gates** | 4-layer validation preventing un-cleared, duplicate, or human-escalated link creation |
 | **Payment Outcome Measurement** | Live Razorpay status polling that maps payment link status to `recovered`, `pending`, or `not_recovered` |
 | **Recovery Analytics Summary** | Live computation of 8 financial metrics including recovery rate, at-risk amounts, and per-root-cause breakdowns |
+| **React Frontend Dashboard** | Premium fintech-style UI with Recovery Queue, Case Detail pipeline timeline, and live analytics dashboard |
 | **Razorpay Health Check** | Direct test-mode connectivity and credential verification |
 
 ---
@@ -33,7 +34,7 @@ recovery-agent/
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py                  # Package marker
-│   │   ├── main.py                      # FastAPI app & REST endpoints
+│   │   ├── main.py                      # FastAPI app, REST endpoints & CORS middleware
 │   │   ├── database.py                  # Database engine, session, and auto-migration
 │   │   ├── models.py                    # LossEvent, PipelineRun, AuditLog ORM models
 │   │   ├── seed_data.py                 # Synthetic data generator
@@ -52,6 +53,28 @@ recovery-agent/
 │   ├── .gitignore
 │   └── requirements.txt
 │
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx                      # Root app with BrowserRouter & routes
+│   │   ├── main.jsx                     # React entry point
+│   │   ├── index.css                    # Tailwind CSS + Inter font + global utilities
+│   │   ├── services/
+│   │   │   └── api.js                   # Centralized API service & fetchMergedQueue()
+│   │   ├── components/
+│   │   │   ├── Navigation.jsx           # Top navigation bar
+│   │   │   ├── StatusBadge.jsx          # Colored status badge (Cleared/Blocked/Recovered/Pending)
+│   │   │   ├── Loading.jsx              # Loading spinner
+│   │   │   └── ErrorMessage.jsx         # Error display card
+│   │   └── pages/
+│   │       ├── RecoveryQueue.jsx        # Page 1: All events with filter tabs
+│   │       ├── CaseDetail.jsx           # Page 2: Pipeline journey & case inspection
+│   │       └── Dashboard.jsx            # Page 3: Live recovery analytics
+│   │
+│   ├── package.json
+│   ├── vite.config.js
+│   ├── tailwind.config.js
+│   └── postcss.config.js
+│
 └── README.md
 ```
 
@@ -59,13 +82,15 @@ recovery-agent/
 
 ## Setup Instructions
 
-### 1. Navigate to the backend directory
+### Backend
+
+#### 1. Navigate to the backend directory
 
 ```bash
 cd recovery-agent/backend
 ```
 
-### 2. Create and activate a Python virtual environment
+#### 2. Create and activate a Python virtual environment
 
 **Windows (PowerShell):**
 ```powershell
@@ -79,13 +104,13 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Install dependencies
+#### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Configure Environment Variables
+#### 4. Configure Environment Variables
 
 ```bash
 # Windows
@@ -110,41 +135,48 @@ GROQ_MODEL=qwen/qwen3.8-27b
 GUARDRAIL_COOLDOWN_HOURS=12
 ```
 
-> **Note:** The server starts normally even without third-party API keys. Unconfigured services report `not_configured` or fallback gracefully to offline handling.
+> **Note:** The server starts normally even without third-party API keys. Unconfigured services report `not_configured` or fallback gracefully.
 
-### 5. Seed the database
-
-Populate the database with initial failed payment loss events:
+#### 5. Seed the database
 
 ```bash
 python -m app.seed_data
+python -m app.pipeline.seed_guardrail_test_cases   # optional guardrail test cases
 ```
 
-Optionally seed dedicated guardrail boundary test cases:
+#### 6. Start the FastAPI server
 
 ```bash
-python -m app.pipeline.seed_guardrail_test_cases
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 6. Run the Pipeline via CLI
+Backend runs at: **http://localhost:8000**
 
-You can run the pipeline directly from the command line:
+---
+
+### Frontend
+
+#### 1. Navigate to the frontend directory
 
 ```bash
-# Process unanalyzed loss events (detection + root-cause classification)
-python -m app.pipeline.runner
-
-# Reprocess all events (force update)
-python -m app.pipeline.runner --force
+cd recovery-agent/frontend
 ```
 
-### 7. Start the FastAPI Server
+#### 2. Install dependencies
 
 ```bash
-uvicorn app.main:app --reload
+npm install
 ```
 
-The server starts at: **http://127.0.0.1:8000**
+#### 3. Start the development server
+
+```bash
+npm run dev
+```
+
+Frontend runs at: **http://localhost:5173**
+
+> **Note:** Both the backend and frontend must be running simultaneously for the UI to work.
 
 ---
 
@@ -180,8 +212,8 @@ The server starts at: **http://127.0.0.1:8000**
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/pipeline/run-phase4` | Execute automated recovery actions for all cleared pipeline runs (`?force=true` optional) |
-| `GET` | `/pipeline/executed` | List all pipeline runs with generated Razorpay Payment Links and execution details |
+| `POST` | `/pipeline/run-phase4` | Execute automated recovery actions for all cleared pipeline runs |
+| `GET` | `/pipeline/executed` | List all pipeline runs with generated Razorpay Payment Links |
 | `POST` | `/pipeline/execute-one/{event_id}` | Demo endpoint to execute recovery for a single event |
 
 ### Payment Outcome Measurement & Analytics
@@ -194,8 +226,40 @@ The server starts at: **http://127.0.0.1:8000**
 | `POST` | `/pipeline/measure-one/{event_id}` | Demo endpoint to measure a single event's payment outcome in real time |
 
 Interactive API documentation:
-- **Swagger UI:** http://127.0.0.1:8000/docs
-- **ReDoc:** http://127.0.0.1:8000/redoc
+- **Swagger UI:** http://localhost:8000/docs
+- **ReDoc:** http://localhost:8000/redoc
+
+---
+
+## Frontend Pages
+
+### Recovery Queue (`/`)
+The default landing page. Displays all failed payment events in a professional fintech-style table.
+
+- **All events** — merged from 5 backend endpoints into one unified view
+- **Filter tabs** — All / Blocked / Cleared / Recovered / Pending (client-side, instant)
+- **Status badges** — color-coded guardrail and outcome indicators
+- **Row click** — navigates to Case Detail for that event
+
+### Case Detail (`/case/:eventId`)
+The most important page for the demo — shows the complete AI recovery pipeline journey for a single event.
+
+- **Header** — Order ID, customer name, amount, current outcome
+- **Info cards** — Failure Code, Root Cause, Strategy
+- **Guardrail block warning** — prominent red panel when guardrail prevented execution
+- **Razorpay Payment Link** — clickable link opening in a new tab
+- **Refresh Status** — calls `POST /pipeline/measure-one/{id}` live to detect real payments
+- **Pipeline Timeline** — vertical journey: Detect → Root Cause → Strategy → Guardrail → Execute → Measure
+
+### Dashboard (`/dashboard`)
+Live recovery analytics powered entirely by `GET /pipeline/summary`.
+
+- **Hero metric** — Total Revenue Recovered (most prominent)
+- **Recovery Rate** — percentage of at-risk revenue recovered
+- **Secondary cards** — eligible at-risk, guardrail-blocked value, total executed, pending count
+- **Outcome breakdown** — Recovered / Pending / Not Recovered counts
+- **Root cause table** — all 6 categories with attempted count, recovered count, recovered amount, and progress bar
+- **Auto-refresh** — every 10 seconds with live timestamp indicator
 
 ---
 
@@ -233,38 +297,30 @@ Each classified root cause is mapped to a tailored recovery strategy:
 
 Before any automated recovery action can be executed, every candidate transaction must pass four strict guardrail checks (evaluated without short-circuiting):
 
-1. **Maximum Attempts Exceeded (`max_attempts_exceeded`)**:
-   Prevents spamming customers. Blocks recovery if prior failed recovery attempts exceed threshold.
-2. **Cooldown Period Active (`cooldown_active`)**:
-   Enforces a mandatory quiet period (configurable via `GUARDRAIL_COOLDOWN_HOURS`, default 12h) since the last contact attempt.
-3. **Amount Ceiling Exceeded (`amount_exceeds_auto_recovery_ceiling`)**:
-   Transactions exceeding the safety threshold (₹4,500 / 450,000 paise) are blocked from automated execution to prevent unintended high-value transfers.
-4. **Escalation Review Required (`escalated_not_auto_actionable`)**:
-   Events marked for human review (`escalate_to_human_review`) are blocked from automated execution to prevent unauthorized customer outreach.
+1. **Maximum Attempts Exceeded (`max_attempts_exceeded`)**: Prevents spamming customers.
+2. **Cooldown Period Active (`cooldown_active`)**: Enforces a mandatory quiet period (configurable via `GUARDRAIL_COOLDOWN_HOURS`, default 12h).
+3. **Amount Ceiling Exceeded (`amount_exceeds_auto_recovery_ceiling`)**: Transactions above ₹4,500 (450,000 paise) are blocked.
+4. **Escalation Review Required (`escalated_not_auto_actionable`)**: Human-escalated events are never auto-executed.
 
 ---
 
 ## Automated Recovery Execution & Razorpay Integration
 
-When an event passes all safety guardrails, the recovery engine autonomously initiates recovery:
-
 ### 4-Layer Safety Gates
-1. **Guardrail Gate**: Ensures `guardrail_passed is True`. Blocked events are strictly rejected.
-2. **Strategy Gate**: Blocks human-escalated events (`escalate_to_human_review`).
+1. **Guardrail Gate**: Ensures `guardrail_passed is True`.
+2. **Strategy Gate**: Blocks human-escalated events.
 3. **Whitelist Gate**: Confirms the strategy is in the executable recovery whitelist.
-4. **Idempotency Gate**: Re-execution is safely skipped if a valid `razorpay_link_id` already exists.
+4. **Idempotency Gate**: Skips if `razorpay_link_id` already exists.
 
 ### Recovery Execution Flow
-- **Razorpay Payment Link Creation**: Calls `razorpay_client.payment_link.create()` with customer details, order reference, currency, amount, and automatic SMS/email notification flags.
-- **Dynamic Descriptions**: Uses Groq LLM to generate empathetic, customer-friendly payment notes tailored to the root cause (with robust deterministic fallbacks).
-- **Intelligent Scheduling**: Strategies like `retry_in_48_hours` automatically compute and record `scheduled_for` timestamps.
-- **Audit Logging**: Every execution attempt, whether successful, skipped, or failed, records a permanent audit log entry.
+- **Razorpay Payment Link Creation** via `razorpay_client.payment_link.create()`
+- **Dynamic Descriptions** via Groq LLM (with deterministic fallback)
+- **Intelligent Scheduling** for `retry_in_48_hours` strategies
+- **Audit Logging** for every execution attempt
 
 ---
 
 ## Payment Outcome Measurement
-
-After Razorpay Payment Links are created, the system polls Razorpay to determine whether each link has been paid.
 
 ### Status Mapping
 
@@ -278,22 +334,22 @@ After Razorpay Payment Links are created, the system polls Razorpay to determine
 
 ### Key Guarantees
 
-- **No fake recoveries**: A `PipelineRun` is only set to `outcome="recovered"` when Razorpay confirms the actual payment.
-- **No double-counting**: `total_recovered_amount` is always computed as `SUM(recovered_amount WHERE outcome="recovered")` from live DB state — never accumulated from AuditLog history.
-- **API failure safety**: If a Razorpay API call fails, any previously confirmed `outcome="recovered"` is preserved and never overwritten. An AuditLog entry is written explaining the preservation.
-- **Always fresh**: Phase 5 never skips events based on existing outcome — Razorpay is always re-fetched to capture real-time payment completions.
+- **No fake recoveries**: Outcome is only set to `recovered` when Razorpay confirms payment.
+- **No double-counting**: `total_recovered_amount` is always `SUM(recovered_amount WHERE outcome="recovered")` from live DB state.
+- **API failure safety**: Previously confirmed `recovered` outcomes are never overwritten on API failure.
+- **Always fresh**: Phase 5 always re-fetches Razorpay — never skips based on existing outcome.
 
-### Recovery Analytics Summary (`GET /pipeline/summary`)
+### Recovery Analytics (`GET /pipeline/summary`)
 
 | Metric | Description |
 |---|---|
 | `total_executed_events` | Runs with a valid Razorpay Payment Link |
-| `total_at_risk_amount` | Sum of `event.amount` for all executed runs (paise) |
-| `eligible_at_risk_amount` | Sum of `event.amount` for all guardrail-cleared runs (paise) |
+| `total_at_risk_amount` | Sum of `event.amount` for executed runs (paise) |
+| `eligible_at_risk_amount` | Sum of `event.amount` for guardrail-cleared runs (paise) |
 | `total_recovered_amount` | Sum of `recovered_amount` where `outcome="recovered"` (paise) |
 | `recovery_rate` | `(total_recovered / total_at_risk) × 100` (%) |
 | `recovered_count` | Number of confirmed recovered events |
 | `pending_count` | Number of pending (unpaid) events |
 | `not_recovered_count` | Number of cancelled or expired links |
-| `guardrail_blocked_value` | Sum of `event.amount` intentionally blocked by guardrails (paise) |
+| `guardrail_blocked_value` | Sum of `event.amount` blocked by guardrails (paise) |
 | `by_root_cause` | Per-root-cause breakdown: `attempted_count`, `recovered_count`, `recovered_amount` |
