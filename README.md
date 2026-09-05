@@ -1,6 +1,6 @@
 # Reviva
 
-An AI-powered failed payment recovery agent that detects payment failures, analyzes root causes with hybrid rule/LLM classification, determines targeted recovery strategies, and enforces safety guardrails before recovery execution.
+An AI-powered failed payment recovery agent that detects payment failures, analyzes root causes with hybrid rule/LLM classification, determines targeted recovery strategies, enforces safety guardrails, and autonomously executes recovery actions via the Razorpay API.
 
 ---
 
@@ -16,6 +16,9 @@ An AI-powered failed payment recovery agent that detects payment failures, analy
 | **Strategy Selection** | Deterministic recovery strategy selection mapped directly to classified root causes |
 | **Guardrails Engine** | Multi-rule safety evaluation preventing over-contacting, enforcing cooldowns, and bounding recovery amounts |
 | **Guardrail Boundary Tests** | Dedicated test-case seeder covering all guardrail safety rules |
+| **Automated Recovery Execution** | Real-time creation of Razorpay Payment Links with customer notification preferences |
+| **Dynamic Payment Descriptions** | Context-aware payment link descriptions generated via Groq LLM with deterministic fallbacks |
+| **Execution Safety Gates** | 4-layer validation preventing un-cleared, duplicate, or human-escalated link creation |
 | **Razorpay Health Check** | Direct test-mode connectivity and credential verification |
 
 ---
@@ -38,6 +41,7 @@ recovery-agent/
 │   │       ├── root_cause.py            # Rule-based & Groq LLM root-cause analyzer
 │   │       ├── strategy.py              # Root cause to recovery strategy mapping
 │   │       ├── guardrails.py            # Safety guardrail rules & policy checks
+│   │       ├── execute.py               # Automated action execution & Razorpay link creation
 │   │       ├── runner.py                # Pipeline orchestrator & CLI runner
 │   │       └── seed_guardrail_test_cases.py # Boundary test case seeder
 │   │
@@ -95,7 +99,7 @@ Edit `.env` with your API credentials:
 RAZORPAY_KEY_ID=rzp_test_xxxxxxxxxxxxxxxx
 RAZORPAY_KEY_SECRET=your_razorpay_secret_here
 
-# Groq LLM Configuration (Root Cause Analysis Fallback)
+# Groq LLM Configuration (Root Cause Analysis & Dynamic Messaging)
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 GROQ_MODEL=qwen/qwen3.8-27b
 
@@ -169,6 +173,14 @@ The server starts at: **http://127.0.0.1:8000**
 | `GET` | `/pipeline/blocked` | List all pipeline runs blocked by guardrails with reason details |
 | `POST` | `/seed/guardrail-test-cases` | Seed idempotent test cases covering all guardrail boundary scenarios |
 
+### Automated Recovery Execution
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/pipeline/run-phase4` | Execute automated recovery actions for all cleared pipeline runs (`?force=true` optional) |
+| `GET` | `/pipeline/executed` | List all pipeline runs with generated Razorpay Payment Links and execution details |
+| `POST` | `/pipeline/execute-one/{event_id}` | Demo endpoint to execute recovery for a single event with strict safety validation |
+
 Interactive API documentation:
 - **Swagger UI:** http://127.0.0.1:8000/docs
 - **ReDoc:** http://127.0.0.1:8000/redoc
@@ -217,3 +229,21 @@ Before any automated recovery action can be executed, every candidate transactio
    Transactions exceeding the safety threshold (₹4,500 / 450,000 paise) are blocked from automated execution to prevent unintended high-value transfers.
 4. **Escalation Review Required (`escalated_not_auto_actionable`)**:
    Events marked for human review (`escalate_to_human_review`) are blocked from automated execution to prevent unauthorized customer outreach.
+
+---
+
+## Automated Recovery Execution & Razorpay Integration
+
+When an event passes all safety guardrails, the recovery engine autonomously initiates recovery:
+
+### 4-Layer Safety Gates
+1. **Guardrail Gate**: Ensures `guardrail_passed is True`. Blocked events are strictly rejected.
+2. **Strategy Gate**: Blocks human-escalated events (`escalate_to_human_review`).
+3. **Whitelist Gate**: Confirms the strategy is in the executable recovery whitelist.
+4. **Idempotency Gate**: Re-execution is safely skipped if a valid `razorpay_link_id` already exists.
+
+### Recovery Execution Flow
+- **Razorpay Payment Link Creation**: Calls `razorpay_client.payment_link.create()` with customer details, order reference, currency, amount, and automatic SMS/email notification flags.
+- **Dynamic Descriptions**: Uses Groq LLM to generate empathetic, customer-friendly payment notes tailored to the root cause (with robust deterministic fallbacks).
+- **Intelligent Scheduling**: Strategies like `retry_in_48_hours` automatically compute and record `scheduled_for` timestamps.
+- **Audit Logging**: Every execution attempt, whether successful, skipped, or failed, records a permanent audit log entry.
