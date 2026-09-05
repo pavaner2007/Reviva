@@ -1,25 +1,3 @@
-"""
-pipeline/guardrails.py — Guardrail checks stage (Phase 3, Step 2).
-
-check_guardrails(event, pipeline_run, db) -> dict
-
-Evaluates ALL four guardrail rules against the current event and pipeline run.
-All rules are always checked — no short-circuiting on first failure.
-All failing reasons are collected and returned together.
-
-Guardrail Rules:
-    1. check_max_attempts()   — customer cannot have > 3 prior cleared attempts
-    2. check_cooldown()       — no auto-recovery within GUARDRAIL_COOLDOWN_HOURS
-    3. check_escalation()     — escalate_to_human_review is always blocked
-    4. check_amount_ceiling() — amount > 450000 paise (₹4,500) is blocked
-
-Final decision written to:
-    PipelineRun.guardrail_passed  (bool)
-    PipelineRun.guardrail_reason  (str | None — comma-separated fail reasons)
-
-One AuditLog row is written at stage="guardrail" describing PASSED or BLOCKED.
-"""
-
 from __future__ import annotations
 
 import os
@@ -240,3 +218,26 @@ def check_guardrails(
     db.commit()
 
     return GuardrailResult(passed=passed, failed_reasons=failed_reasons)
+
+
+"""
+pipeline/guardrails.py — Guardrail checks stage (Phase 3, Step 2).
+
+check_guardrails(event, pipeline_run, db) -> dict
+
+Evaluates ALL four guardrail rules against the current event and pipeline run.
+All rules are always checked — no short-circuiting on first failure.
+All failing reasons are collected and returned together.
+
+Guardrail Rules:
+    1. check_max_attempts()   — customer cannot have > 3 prior cleared attempts
+    2. check_cooldown()       — no auto-recovery within GUARDRAIL_COOLDOWN_HOURS
+    3. check_escalation()     — escalate_to_human_review is always blocked
+    4. check_amount_ceiling() — amount > 450000 paise (₹4,500) is blocked
+
+Final decision written to:
+    PipelineRun.guardrail_passed  (bool)
+    PipelineRun.guardrail_reason  (str | None — comma-separated fail reasons)
+
+One AuditLog row is written at stage="guardrail" describing PASSED or BLOCKED.
+"""
