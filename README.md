@@ -1,21 +1,20 @@
 # Reviva
 
-An AI-powered failed payment recovery agent that detects payment failures, analyzes their causes, and helps recover lost revenue intelligently.
+An AI-powered failed payment recovery agent that detects payment failures, analyzes their root causes, and helps recover lost revenue intelligently.
 
 ---
 
 ## Features & Components
 
-This system provides the core backend foundation for tracking failed payment events, managing loss event records, and integrating with Razorpay.
-
-| Component                    | Description                                                 |
-| ---------------------------- | ----------------------------------------------------------- |
-| **Project Structure**        | Clean `backend/app/` layout with FastAPI                    |
-| **SQLite Database**          | Auto-created at `backend/recovery_agent.db`                 |
-| **ORM Models**               | `LossEvent`, `PipelineRun`, `AuditLog` (SQLAlchemy 2.0)     |
-| **Synthetic Data Generator** | 50 realistic failed-payment records                         |
-| **Razorpay Health Check**    | Test-mode credential verification                           |
-| **API Endpoints**            | `/health`, `/events`, `/events/summary`, `/health/razorpay` |
+| Component | Description |
+|---|---|
+| **FastAPI Backend** | Clean modular architecture under `backend/app/` |
+| **SQLite Database** | Auto-migrated schema with `LossEvent`, `PipelineRun`, and `AuditLog` models |
+| **Synthetic Data Engine** | 50 realistic failed-payment records spanning common and ambiguous failure codes |
+| **Detection Engine** | Detects loss events, validates fields, and logs audit events |
+| **Root Cause Analysis** | Hybrid analyzer combining fast rule-based matching with Groq LLM fallback for edge cases |
+| **Pipeline Runner & CLI** | Idempotent execution orchestrator with CLI and REST API interfaces |
+| **Razorpay Health Check** | Direct test-mode connectivity and credential verification |
 
 ---
 
@@ -26,22 +25,22 @@ recovery-agent/
 │
 ├── backend/
 │   ├── app/
-│   │   ├── __init__.py       # Package marker
-│   │   ├── main.py           # FastAPI app + all endpoints
-│   │   ├── database.py       # Engine, session factory, Base
-│   │   ├── models.py         # LossEvent, PipelineRun, AuditLog
-│   │   └── seed_data.py      # Synthetic data generator (50 records)
+│   │   ├── __init__.py          # Package marker
+│   │   ├── main.py              # FastAPI app & REST endpoints
+│   │   ├── database.py          # Database engine, session, and auto-migration
+│   │   ├── models.py            # LossEvent, PipelineRun, AuditLog ORM models
+│   │   ├── seed_data.py         # Synthetic data generator (50 records)
+│   │   └── pipeline/
+│   │       ├── __init__.py      # Pipeline package marker
+│   │       ├── detect.py        # Loss event validation & detection
+│   │       ├── root_cause.py    # Rule-based & Groq LLM root-cause analyzer
+│   │       └── runner.py        # Pipeline orchestrator & CLI runner
 │   │
+│   ├── .env.example             # Environment variable template
 │   ├── .gitignore
 │   └── requirements.txt
 │
 └── README.md
-```
-
-The SQLite database file is created automatically at:
-
-```
-backend/recovery_agent.db
 ```
 
 ---
@@ -57,14 +56,12 @@ cd recovery-agent/backend
 ### 2. Create and activate a Python virtual environment
 
 **Windows (PowerShell):**
-
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
 **macOS / Linux:**
-
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -76,7 +73,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Configure Razorpay credentials
+### 4. Configure Environment Variables
 
 ```bash
 # Windows
@@ -86,15 +83,19 @@ copy .env.example .env
 cp .env.example .env
 ```
 
-Open `.env` and replace the placeholder values with your **Razorpay test-mode** keys:
+Edit `.env` with your API credentials:
 
 ```env
+# Razorpay Test Credentials
 RAZORPAY_KEY_ID=rzp_test_xxxxxxxxxxxxxxxx
-RAZORPAY_KEY_SECRET=your_actual_secret_here
+RAZORPAY_KEY_SECRET=your_razorpay_secret_here
+
+# Groq LLM Configuration (Root Cause Analysis Fallback)
+GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GROQ_MODEL=qwen/qwen3.8-27b
 ```
 
-> **Note:** The app starts normally even if `.env` does not exist or keys are empty.
-> The `/health/razorpay` endpoint will return `not_configured` in that case.
+> **Note:** The server starts normally even without API keys. Unconfigured services will report `not_configured` or fallback gracefully to offline handling.
 
 ### 5. Seed the database
 
@@ -104,35 +105,19 @@ Run from the `backend/` directory:
 python -m app.seed_data
 ```
 
-Expected output:
+### 6. Run the Detection & Root Cause Analysis Pipeline
 
-```
-========================================
-SEEDING COMPLETE
-========================================
+You can run the pipeline directly via CLI:
 
-Total LossEvent records: 50
+```bash
+# Process all unanalyzed loss events
+python -m app.pipeline.runner
 
-Failure Code Breakdown:
-  insufficient_funds: 15
-  card_expired: 12
-  bank_timeout: 10
-  otp_failed: 8
-  3DS_AUTH_TIMEOUT: 1
-  unknown_gateway_error: 1
-  issuer_response_unclassified: 1
-  payment_processing_interrupted: 1
-  auth_error_unmapped: 1
-
-Payment Type Breakdown:
-  subscription: 30
-  one_off: 20
-
-Database: .../backend/recovery_agent.db
-========================================
+# Reprocess all events (force update)
+python -m app.pipeline.runner --force
 ```
 
-### 6. Start the FastAPI server
+### 7. Start the FastAPI server
 
 ```bash
 uvicorn app.main:app --reload
@@ -142,31 +127,40 @@ The server starts at: **http://127.0.0.1:8000**
 
 ---
 
-## API Endpoints
+## API Reference
 
-| Endpoint               | Description                     | Expected Response                       |
-| ---------------------- | ------------------------------- | --------------------------------------- |
-| `GET /health`          | App liveness                    | `{"status": "ok"}`                      |
-| `GET /events`          | All 50 seeded LossEvent records | JSON array of 50 objects                |
-| `GET /events/summary`  | Live aggregate stats            | totals by failure code and payment type |
-| `GET /health/razorpay` | Razorpay credential check       | `ok` / `not_configured` / `error`       |
+### Health & Events
 
-Interactive API docs (auto-generated by FastAPI):
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Server liveness check |
+| `GET` | `/health/razorpay` | Razorpay credential verification |
+| `GET` | `/events` | List all seeded loss events |
+| `GET` | `/events/summary` | Aggregate statistics by failure code and payment type |
 
-- Swagger UI: http://127.0.0.1:8000/docs
-- ReDoc: http://127.0.0.1:8000/redoc
+### Pipeline & Diagnostics
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/pipeline/run-phase2` | Trigger detection & root cause pipeline execution (`?force=true` optional) |
+| `GET` | `/pipeline/results` | Retrieve all pipeline runs with root cause classifications |
+| `GET` | `/audit-log/{event_id}` | Retrieve chronological audit trail for a specific event |
+
+Interactive API documentation:
+- **Swagger UI:** http://127.0.0.1:8000/docs
+- **ReDoc:** http://127.0.0.1:8000/redoc
 
 ---
 
-## Synthetic Data Distribution
+## Root Cause Analysis Classification
 
-| Failure Code         | Count  | %        |
-| -------------------- | ------ | -------- |
-| `insufficient_funds` | 15     | 30%      |
-| `card_expired`       | 12     | 24%      |
-| `bank_timeout`       | 10     | 20%      |
-| `otp_failed`         | 8      | 16%      |
-| Unusual / ambiguous  | 5      | 10%      |
-| **Total**            | **50** | **100%** |
+The hybrid analyzer categorizes failed payment events into standard failure categories:
 
-Payment type split: **30 subscription** / **20 one-off**
+- `insufficient_funds` &rarr; Customer account balance insufficient
+- `card_expired` &rarr; Card validity expired
+- `bank_timeout` &rarr; Issuer bank or network timed out
+- `otp_failed` &rarr; 3DS / OTP authentication failed
+- `issuer_declined` &rarr; Declined by issuing bank
+- `fraud_risk` &rarr; Suspected fraud / high risk transaction
+
+When encountering unmapped or free-text errors (e.g. `3DS_AUTH_TIMEOUT`, `auth_error_unmapped`), the system calls the Groq LLM with a strict JSON classification prompt to resolve the underlying root cause with confidence scoring and reasoning.
