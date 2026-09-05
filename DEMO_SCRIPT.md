@@ -38,21 +38,21 @@
 
 | Field | Value |
 |---|---|
-| **Event ID** | **34** |
-| **Customer** | Ramesh Naidu |
-| **Amount** | ₹4,499 |
+| **Event ID** | **21** |
+| **Customer** | Tanvi Shah |
+| **Amount** | ₹2,999 |
 | **Root Cause** | OTP Verification Failed |
 | **Strategy** | resend_checkout_link_now |
-| **Razorpay Link** | https://rzp.io/rzp/S15G3jA |
-| **URL** | http://localhost:5173/case/34 |
+| **Razorpay Link** | https://rzp.io/rzp/mLOz9aW |
+| **URL** | http://localhost:5173/case/21 |
 
 > **To create a recovered event for demo:**
-> 1. Open https://rzp.io/rzp/S15G3jA in a browser tab
+> 1. Open https://rzp.io/rzp/mLOz9aW in a browser tab
 > 2. Pay with test card: `4111 1111 1111 1111`, any future expiry, CVV `123`
 > 3. Or UPI: `success@razorpay`
-> 4. Then call: `POST http://localhost:8000/pipeline/measure-one/34`
+> 4. Then call: `POST http://localhost:8000/pipeline/measure-one/21`
 > 5. Verify `outcome=recovered` in the response
-> 6. Reload http://localhost:5173/case/34
+> 6. Reload http://localhost:5173/case/21
 
 ---
 
@@ -106,9 +106,9 @@ Point to the red RECOVERY BLOCKED banner:
 
 ### [1:35 – 2:20] Recovered Case Detail
 
-**Action:** Navigate to http://localhost:5173/case/34
+**Action:** Navigate to http://localhost:5173/case/21
 
-> *"Now a successful recovery. Ramesh Naidu's OTP failed during checkout. The AI classified it as OTP Verification Failed."*
+> *"Now a successful recovery. Tanvi Shah's OTP failed during checkout. The AI classified it as OTP Verification Failed."*
 
 > *"Strategy: resend checkout link now — the fastest path to re-engage the customer."*
 
@@ -122,7 +122,7 @@ Point to the red RECOVERY BLOCKED banner:
 
 **Action:** Point to outcome badge and recovered amount.
 
-> *"Outcome: Recovered. ₹4,499 recovered. This came from Razorpay's API — not a hardcoded value."*
+> *"Outcome: Recovered. ₹2,999 recovered. This came from Razorpay's API — not a hardcoded value."*
 
 **Action:** Click **Refresh Status** to show the live measurement call.
 
