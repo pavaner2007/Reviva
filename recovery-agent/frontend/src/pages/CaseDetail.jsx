@@ -123,6 +123,9 @@ export default function CaseDetail() {
               <span className="font-mono text-sm bg-gray-100 text-gray-600 px-3 py-1 rounded-lg">
                 {row.order_id}
               </span>
+              <span className="text-xs text-gray-400 font-medium bg-gray-50 border border-gray-200 px-2 py-1 rounded">
+                Event #{row.event_id}
+              </span>
               <OutcomeBadge outcome={row.outcome} />
             </div>
             <h1 className="text-2xl font-bold text-gray-900">{row.customer_name}</h1>

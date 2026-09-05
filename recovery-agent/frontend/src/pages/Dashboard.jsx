@@ -78,7 +78,23 @@ export default function Dashboard() {
     </div>
   );
 
+  // Empty state — DB has no events yet
+  const isEmpty = !summary ||
+    (summary.total_executed_events === 0 && summary.total_at_risk_amount === 0);
   const byRootCause = summary.by_root_cause ?? {};
+
+  if (isEmpty) {
+    return (
+      <div className="max-w-5xl mx-auto px-6 py-8">
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">Recovery Dashboard</h1>
+        <div className="card p-12 text-center">
+          <p className="text-gray-400 text-lg mb-2">📭 No data yet</p>
+          <p className="text-gray-500 text-sm">Run the seed and pipeline to populate events.</p>
+          <code className="mt-3 block text-xs text-gray-400">python -m app.reset_and_verify --yes</code>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-8">

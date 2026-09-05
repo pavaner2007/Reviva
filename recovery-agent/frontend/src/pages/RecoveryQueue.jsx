@@ -98,7 +98,15 @@ export default function RecoveryQueue() {
       {loading && <Loading message="Loading recovery events…" />}
       {error && <ErrorMessage message={error} />}
 
-      {!loading && !error && (
+      {!loading && !error && rows.length === 0 && (
+        <div className="card p-12 text-center">
+          <p className="text-gray-400 text-lg mb-2">📭 No data yet</p>
+          <p className="text-gray-500 text-sm">Run the seed and pipeline to populate events.</p>
+          <code className="mt-3 block text-xs text-gray-400">python -m app.seed_data &amp;&amp; python -m app.reset_and_verify</code>
+        </div>
+      )}
+
+      {!loading && !error && rows.length > 0 && (
         <div className="card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
