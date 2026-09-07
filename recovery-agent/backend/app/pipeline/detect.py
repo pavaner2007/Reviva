@@ -12,7 +12,6 @@ Idempotency:
     A "detect" AuditLog entry is only written when a new PipelineRun
     is created, not on subsequent calls.
 """
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -21,7 +20,6 @@ from typing import TypedDict
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog, LossEvent, PipelineRun
-
 
 class DetectResult(TypedDict):
     detected: bool
